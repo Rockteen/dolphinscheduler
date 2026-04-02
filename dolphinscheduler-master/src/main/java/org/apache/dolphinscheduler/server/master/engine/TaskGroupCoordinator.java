@@ -38,6 +38,7 @@ import org.apache.dolphinscheduler.extract.master.transportor.TaskGroupSlotAcqui
 import org.apache.dolphinscheduler.extract.master.transportor.TaskGroupSlotAcquireSuccessNotifyResponse;
 import org.apache.dolphinscheduler.plugin.task.api.enums.TaskExecutionStatus;
 import org.apache.dolphinscheduler.plugin.task.api.utils.LogUtils;
+import org.apache.dolphinscheduler.server.master.engine.task.priority.PriorityWeightEngine;
 import org.apache.dolphinscheduler.server.master.utils.TaskGroupUtils;
 
 import org.apache.commons.collections4.CollectionUtils;
@@ -72,6 +73,9 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
 
     @Autowired
     private WorkflowInstanceDao workflowInstanceDao;
+
+    @Autowired
+    private PriorityWeightEngine priorityWeightEngine;
 
     private boolean flag = false;
 
@@ -112,6 +116,7 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
                 amendTaskGroupUseSize();
                 amendTaskGroupQueueStatus();
                 dealWithForceStartTaskGroupQueue();
+                recalculateWaitingTaskScores();
                 dealWithWaitingTaskGroupQueue();
 
                 taskGroupCoordinatorRoundCost.stop();
@@ -256,6 +261,59 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
         }
     }
 
+    /**
+     * Phase 2: Recalculate priority scores for all waiting tasks.
+     * This periodically updates weightScore based on changing conditions
+     * (e.g., increased wait time triggers anti-starvation boost).
+     * Updated scores are persisted to DB.
+     */
+    private void recalculateWaitingTaskScores() {
+        List<TaskGroup> taskGroups = taskGroupDao.queryAvailableTaskGroups();
+        if (CollectionUtils.isEmpty(taskGroups)) {
+            return;
+        }
+        StopWatch scoreRecalcCost = StopWatch.createStarted();
+        for (TaskGroup taskGroup : taskGroups) {
+            try {
+                List<TaskGroupQueue> waitingQueues = taskGroupQueueDao
+                        .queryAllInQueueTaskGroupQueueByGroupId(taskGroup.getId())
+                        .stream()
+                        .filter(q -> TaskGroupQueueStatus.WAIT_QUEUE == q.getStatus())
+                        .collect(Collectors.toList());
+
+                if (waitingQueues.isEmpty()) {
+                    continue;
+                }
+
+                // Gather related entities
+                List<Integer> taskIds = waitingQueues.stream()
+                        .map(TaskGroupQueue::getTaskId)
+                        .collect(Collectors.toList());
+                Map<Integer, TaskInstance> taskInstances = taskInstanceDao.queryByIds(taskIds)
+                        .stream()
+                        .collect(Collectors.toMap(TaskInstance::getId, Function.identity()));
+
+                Map<Integer, WorkflowInstance> workflowInstances = taskInstances.values().stream()
+                        .map(TaskInstance::getWorkflowInstanceId)
+                        .distinct()
+                        .map(id -> workflowInstanceDao.queryById(id))
+                        .filter(wi -> wi != null)
+                        .collect(Collectors.toMap(WorkflowInstance::getId, Function.identity()));
+
+                // Recalculate scores
+                priorityWeightEngine.recalculateScores(waitingQueues, taskInstances, Map.of(), workflowInstances);
+
+                // Persist updated scores
+                for (TaskGroupQueue queue : waitingQueues) {
+                    taskGroupQueueDao.updateById(queue);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to recalculate scores for taskGroup {}", taskGroup.getId(), e);
+            }
+        }
+        log.debug("Recalculate waiting task scores cost: {}/ms", scoreRecalcCost.getTime());
+    }
+
     private void dealWithWaitingTaskGroupQueue() {
         // Find the TaskGroup which usage < maxSize.
         // Find the highest priority inQueue task group queue(Which is inQueue and status is Waiting and force start is
@@ -272,11 +330,21 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
                 log.info("TaskGroup {} is full, available size is {}", taskGroup, availableSize);
                 continue;
             }
+            // Phase 1: Sort by priority (descending) then by weightScore (descending) for priority-aware scheduling
             List<TaskGroupQueue> taskGroupQueues =
                     taskGroupQueueDao.queryAllInQueueTaskGroupQueueByGroupId(taskGroup.getId())
                             .stream()
                             .filter(taskGroupQueue -> Flag.NO.getCode() == taskGroupQueue.getForceStart())
                             .filter(taskGroupQueue -> TaskGroupQueueStatus.WAIT_QUEUE == taskGroupQueue.getStatus())
+                            .sorted((q1, q2) -> {
+                                // First compare by priority field (larger = higher priority)
+                                int priorityCompare = Integer.compare(q2.getPriority(), q1.getPriority());
+                                if (priorityCompare != 0) {
+                                    return priorityCompare;
+                                }
+                                // Then compare by weightScore (larger = higher priority)
+                                return Integer.compare(q2.getWeightScore(), q1.getWeightScore());
+                            })
                             .limit(availableSize)
                             .collect(Collectors.toList());
             if (CollectionUtils.isEmpty(taskGroupQueues)) {
@@ -349,6 +417,11 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
         // Set the taskGroupQueue status to WAIT_QUEUE and add to queue
         // The queue only contains the taskGroupQueue which status is WAIT_QUEUE or ACQUIRE_SUCCESS
         Date now = new Date();
+
+        // Phase 2: Calculate initial weight score using PriorityWeightEngine
+        WorkflowInstance workflowInstance = workflowInstanceDao.queryById(taskInstance.getWorkflowInstanceId());
+        int weightScore = priorityWeightEngine.calculateInitialScore(taskInstance, taskDefinition, workflowInstance);
+
         TaskGroupQueue taskGroupQueue = TaskGroupQueue
                 .builder()
                 .taskId(taskInstance.getId())
@@ -356,13 +429,15 @@ public class TaskGroupCoordinator implements ITaskGroupCoordinator, AutoCloseabl
                 .groupId(taskInstance.getTaskGroupId())
                 .workflowInstanceId(taskInstance.getWorkflowInstanceId())
                 .priority(taskDefinition.getTaskGroupPriority())
+                .weightScore(weightScore)
                 .inQueue(Flag.YES.getCode())
                 .forceStart(Flag.NO.getCode())
                 .status(TaskGroupQueueStatus.WAIT_QUEUE)
                 .createTime(now)
                 .updateTime(now)
                 .build();
-        log.info("Success insert TaskGroupQueue: {} for TaskInstance: {}", taskGroupQueue, taskInstance.getName());
+        log.info("Success insert TaskGroupQueue: {} for TaskInstance: {} with weightScore: {}",
+                taskGroupQueue, taskInstance.getName(), weightScore);
         taskGroupQueueDao.insert(taskGroupQueue);
     }
 

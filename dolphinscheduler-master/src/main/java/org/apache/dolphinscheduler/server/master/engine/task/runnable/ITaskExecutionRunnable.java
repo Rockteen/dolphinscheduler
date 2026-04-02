@@ -102,4 +102,13 @@ public interface ITaskExecutionRunnable
     TaskDefinition getTaskDefinition();
 
     TaskExecutionContext getTaskExecutionContext();
+
+    /**
+     * Get effective priority weight for runtime priority-aware scheduling.
+     * Higher value means higher priority.
+     * Default implementation returns 50 (mid-range).
+     */
+    default int getEffectivePriorityWeight() {
+        return 50;
+    }
 }

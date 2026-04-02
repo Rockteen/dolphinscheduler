@@ -168,6 +168,16 @@ public class TaskExecutionRunnable implements ITaskExecutionRunnable {
         if (other == null) {
             return 1;
         }
+
+        // Phase 1: Incorporate dynamic priorityWeight into comparison
+        // Higher priorityWeight = higher priority (compare in reverse)
+        int thisWeight = getEffectivePriorityWeight();
+        int otherWeight = other.getEffectivePriorityWeight();
+        int weightCompareResult = Integer.compare(otherWeight, thisWeight);
+        if (weightCompareResult != 0) {
+            return weightCompareResult;
+        }
+
         int workflowInstancePriorityCompareResult = workflowInstance.getWorkflowInstancePriority().getCode() -
                 other.getWorkflowInstance().getWorkflowInstancePriority().getCode();
         if (workflowInstancePriorityCompareResult != 0) {
@@ -189,6 +199,22 @@ public class TaskExecutionRunnable implements ITaskExecutionRunnable {
         }
         // earlier submit time, higher priority
         return taskInstance.getFirstSubmitTime().compareTo(other.getTaskInstance().getFirstSubmitTime());
+    }
+
+    /**
+     * Get effective priority weight considering both TaskInstance and WorkflowInstance priority weights.
+     * Returns the TaskInstance's priorityWeight if set, otherwise falls back to WorkflowInstance's.
+     * Default value is 50 (mid-range) when neither is set.
+     */
+    @Override
+    public int getEffectivePriorityWeight() {
+        if (taskInstance != null && taskInstance.getPriorityWeight() != null) {
+            return taskInstance.getPriorityWeight();
+        }
+        if (workflowInstance != null && workflowInstance.getPriorityWeight() != null) {
+            return workflowInstance.getPriorityWeight();
+        }
+        return 50; // default mid-range weight
     }
 
     @Override
