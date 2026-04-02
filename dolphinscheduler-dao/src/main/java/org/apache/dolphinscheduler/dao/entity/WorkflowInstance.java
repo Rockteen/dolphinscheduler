@@ -143,6 +143,12 @@ public class WorkflowInstance {
 
     private Priority workflowInstancePriority;
 
+    /**
+     * Dynamic priority weight for runtime management (1-100, default 50).
+     * Used to adjust workflow-level priority at runtime.
+     */
+    private Integer priorityWeight;
+
     private String workerGroup;
 
     private Long environmentCode;

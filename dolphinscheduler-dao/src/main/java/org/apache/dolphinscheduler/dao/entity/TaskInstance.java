@@ -109,6 +109,12 @@ public class TaskInstance implements Serializable {
 
     private Priority taskInstancePriority;
 
+    /**
+     * Dynamic priority weight for runtime management (1-100, default 50).
+     * Used in conjunction with taskInstancePriority for fine-grained scheduling.
+     */
+    private Integer priorityWeight;
+
     @TableField(exist = false)
     private Priority workflowInstancePriority;
 

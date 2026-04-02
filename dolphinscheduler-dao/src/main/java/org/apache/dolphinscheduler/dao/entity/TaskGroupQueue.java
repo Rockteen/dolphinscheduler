@@ -62,6 +62,13 @@ public class TaskGroupQueue implements Serializable {
     private int priority;
 
     /**
+     * Weighted priority score calculated by PriorityWeightEngine.
+     * Higher score means higher priority.
+     * Default value is 0, meaning not yet calculated.
+     */
+    private int weightScore;
+
+    /**
      * is force start
      * 0 NO ,1 YES
      */

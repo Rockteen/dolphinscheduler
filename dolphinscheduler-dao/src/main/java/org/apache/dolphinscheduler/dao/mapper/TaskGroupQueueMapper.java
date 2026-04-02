@@ -93,6 +93,14 @@ public interface TaskGroupQueueMapper extends BaseMapper<TaskGroupQueue> {
 
     void modifyPriority(@Param("queueId") int queueId, @Param("priority") int priority);
 
+    /**
+     * Update the weight score for priority-aware scheduling (Phase 1).
+     *
+     * @param queueId     queue record id
+     * @param weightScore new weight score
+     */
+    void updateWeightScore(@Param("queueId") int queueId, @Param("weightScore") int weightScore);
+
     IPage<TaskGroupQueue> queryTaskGroupQueueByTaskGroupIdPaging(Page<TaskGroupQueue> page,
                                                                  @Param("taskName") String taskName,
                                                                  @Param("workflowName") String workflowName,
